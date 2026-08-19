@@ -1,5 +1,6 @@
 import { SIDO_LIST, MOCK_NOW } from "@/lib/constants";
 import { normalizeReading } from "@/lib/grade";
+import { findLatestMeasured } from "@/lib/snapshot";
 import type { HourlyPoint, Scenario, SidoSnapshot, Snapshot } from "@/types/air-quality";
 
 /** 시드 기반 PRNG — 새로고침해도 값이 재현되도록 함 (데모/스크린샷 안정성) */
@@ -102,24 +103,6 @@ function toHourlyPoints(raw: RawSeries[]): HourlyPoint[] {
   }));
 }
 
-function findLatestMeasured(series: HourlyPoint[]): {
-  pm10: number | null;
-  pm25: number | null;
-  measuredAt: string | null;
-} {
-  const latest = series[series.length - 1];
-
-  let measuredAt: string | null = null;
-  for (let i = series.length - 1; i >= 0; i--) {
-    if (series[i].pm10 !== null || series[i].pm25 !== null) {
-      measuredAt = series[i].time;
-      break;
-    }
-  }
-
-  return { pm10: latest.pm10, pm25: latest.pm25, measuredAt };
-}
-
 function buildSidoSnapshot(sidoId: string, name: string): SidoSnapshot {
   const raw = buildRawSeries(sidoId);
   const series = toHourlyPoints(raw);
@@ -145,7 +128,7 @@ export function buildMockSnapshot(scenario: Scenario): Snapshot {
       ...s,
       series: s.series.slice(-6),
     }));
-    return { generatedAt: MOCK_NOW.toISOString(), sidos: trimmed };
+    return { generatedAt: MOCK_NOW.toISOString(), sidos: trimmed, source: "mock" };
   }
 
   if (scenario === "staleExternal") {
@@ -162,14 +145,14 @@ export function buildMockSnapshot(scenario: Scenario): Snapshot {
         latestMeasuredAt: latest.measuredAt,
       };
     });
-    return { generatedAt: MOCK_NOW.toISOString(), sidos: staleSidos };
+    return { generatedAt: MOCK_NOW.toISOString(), sidos: staleSidos, source: "mock" };
   }
 
   if (scenario === "staleBanner") {
     // F-04-4: 스냅샷 자체가 1시간 이상 갱신되지 않음
     const staleGeneratedAt = new Date(MOCK_NOW.getTime() - 2 * 60 * 60 * 1000);
-    return { generatedAt: staleGeneratedAt.toISOString(), sidos };
+    return { generatedAt: staleGeneratedAt.toISOString(), sidos, source: "mock" };
   }
 
-  return { generatedAt: MOCK_NOW.toISOString(), sidos };
+  return { generatedAt: MOCK_NOW.toISOString(), sidos, source: "mock" };
 }

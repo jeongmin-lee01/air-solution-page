@@ -55,4 +55,6 @@ export type Scenario =
 export interface Snapshot {
   generatedAt: string;
   sidos: SidoSnapshot[];
+  /** 데이터 출처 (검증/디버깅용). live=실 API, cache=서버 메모리 캐시, mock=폴백/데모 데이터 */
+  source?: "live" | "cache" | "mock";
 }

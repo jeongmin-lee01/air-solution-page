@@ -8,6 +8,7 @@ import { SkeletonPanel } from "@/components/dashboard/SkeletonPanel";
 import { ErrorRetry } from "@/components/dashboard/ErrorRetry";
 import { StaleBanner } from "@/components/dashboard/StaleBanner";
 import { DevControls } from "@/components/dashboard/DevControls";
+import { SourceBadge } from "@/components/dashboard/SourceBadge";
 import { useSnapshot } from "@/hooks/useSnapshot";
 import { MOCK_NOW } from "@/lib/constants";
 import { hoursSince } from "@/lib/format";
@@ -30,18 +31,21 @@ export default function Home() {
   }
 
   const selectedSido = snapshot?.sidos.find((s) => s.id === selectedId) ?? null;
-  const bannerStale = snapshot ? hoursSince(snapshot.generatedAt, MOCK_NOW) >= 1 : false;
+  // mock 시나리오는 고정된 MOCK_NOW를 기준으로 만들어져 있고, 실 API 데이터는 실제 현재 시각과 비교해야 한다.
+  const referenceNow = snapshot?.source === "mock" ? MOCK_NOW : new Date();
+  const bannerStale = snapshot ? hoursSince(snapshot.generatedAt, referenceNow) >= 1 : false;
   const staleHours = selectedSido?.latestMeasuredAt
-    ? hoursSince(selectedSido.latestMeasuredAt, MOCK_NOW)
+    ? hoursSince(selectedSido.latestMeasuredAt, referenceNow)
     : 0;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
-      <header>
+      <header className="flex flex-wrap items-baseline gap-2">
         <h1 className="text-xl font-bold text-gray-900">전국 시도별 미세먼지</h1>
         <p className="text-sm text-gray-500">
           지역 칩을 눌러 현재 농도와 24시간 추이를 확인하세요.
         </p>
+        {snapshot?.source && <SourceBadge source={snapshot.source} />}
       </header>
 
       {!loading && !error && bannerStale && <StaleBanner />}
