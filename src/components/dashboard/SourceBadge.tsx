@@ -1,8 +1,8 @@
 import type { Snapshot } from "@/types/air-quality";
 
 const LABEL: Record<NonNullable<Snapshot["source"]>, { text: string; className: string }> = {
+  db: { text: "DB (Supabase)", className: "bg-sky-100 text-sky-800" },
   live: { text: "실시간 API", className: "bg-emerald-100 text-emerald-800" },
-  cache: { text: "캐시된 데이터", className: "bg-sky-100 text-sky-800" },
   mock: { text: "mock 데이터", className: "bg-gray-100 text-gray-600" },
 };
 

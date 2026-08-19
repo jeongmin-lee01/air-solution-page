@@ -9,7 +9,9 @@ const ENDPOINT = "https://apis.data.go.kr/B552584/ArpltnStatsSvc/getCtprvnMesure
 // 실측: dataGubun=HOUR 호출 시 inqBginDt/inqEndDt(YYYYMMDD, PRD §7.1 표에는 누락되어 있었음)가
 // 없으면 매번 SERVICETIMEOUT_ERROR가 난다. 값이 있으면 정상 응답한다 (§7.6-1 확인 완료).
 // 실측 결과 성공률이 약 40~50% 수준으로 불안정해, 재시도 3회로 체감 성공률을 높인다.
-const FETCH_TIMEOUT_MS = 6000;
+// 정상 응답도 6~7초 걸리는 경우가 있어(직접 curl로 6.6초 확인), 타임아웃을 너무 짧게 잡으면
+// 성공할 뻔한 요청을 우리 쪽에서 먼저 끊어버리게 된다.
+const FETCH_TIMEOUT_MS = 9000;
 const MAX_ATTEMPTS = 3;
 
 interface RawHourRow {
@@ -114,8 +116,10 @@ async function fetchItemRows(itemCode: "PM10" | "PM25"): Promise<RawHourRow[]> {
   throw lastError instanceof Error ? lastError : new Error("AirKorea fetch failed");
 }
 
-function mergeIntoSnapshot(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null): Snapshot {
-  const byTime = new Map<string, { pm10: Record<string, number | null>; pm25: Record<string, number | null> }>();
+type TimeBucket = { pm10: Record<string, number | null>; pm25: Record<string, number | null> };
+
+function buildTimeBuckets(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null): Map<string, TimeBucket> {
+  const byTime = new Map<string, TimeBucket>();
 
   function ingest(rows: RawHourRow[], key: "pm10" | "pm25") {
     for (const row of rows) {
@@ -131,6 +135,11 @@ function mergeIntoSnapshot(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null
   ingest(pm10Rows, "pm10");
   if (pm25Rows) ingest(pm25Rows, "pm25");
 
+  return byTime;
+}
+
+function mergeIntoSnapshot(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null): Snapshot {
+  const byTime = buildTimeBuckets(pm10Rows, pm25Rows);
   const last24Times = Array.from(byTime.keys()).sort().slice(-24);
 
   const sidos: SidoSnapshot[] = SIDO_LIST.map((sido) => {
@@ -159,8 +168,39 @@ function mergeIntoSnapshot(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null
   return { generatedAt: new Date().toISOString(), sidos, source: "live" };
 }
 
-/** PM10 실패 시 전체 실패(호출부에서 캐시/mock으로 폴백), PM2.5만 실패하면 PM2.5만 결측 처리. */
-export async function buildLiveSnapshot(): Promise<Snapshot> {
+export interface MeasurementRecord {
+  sido_code: string;
+  data_time: string;
+  pm10: number | null;
+  pm25: number | null;
+}
+
+/** DB upsert용으로 (시도, 시각)별 레코드 목록을 만든다. §7.7 데이터 모델과 1:1 대응. */
+function toMeasurementRecords(pm10Rows: RawHourRow[], pm25Rows: RawHourRow[] | null): MeasurementRecord[] {
+  const byTime = buildTimeBuckets(pm10Rows, pm25Rows);
+  const records: MeasurementRecord[] = [];
+
+  for (const [iso, bucket] of byTime) {
+    for (const sido of SIDO_LIST) {
+      records.push({
+        sido_code: sido.id,
+        data_time: iso,
+        pm10: bucket.pm10[sido.id] ?? null,
+        pm25: pm25Rows ? (bucket.pm25[sido.id] ?? null) : null,
+      });
+    }
+  }
+
+  return records;
+}
+
+interface AirKoreaRows {
+  pm10: RawHourRow[];
+  pm25: RawHourRow[] | null;
+}
+
+/** PM10 실패 시 전체 실패, PM2.5만 실패하면 그쪽만 결측 처리하고 계속 진행. */
+async function fetchAirKoreaRows(): Promise<AirKoreaRows> {
   const [pm10Result, pm25Result] = await Promise.allSettled([
     fetchItemRows("PM10"),
     fetchItemRows("PM25"),
@@ -170,6 +210,25 @@ export async function buildLiveSnapshot(): Promise<Snapshot> {
     throw pm10Result.reason;
   }
 
-  const pm25Rows = pm25Result.status === "fulfilled" ? pm25Result.value : null;
-  return mergeIntoSnapshot(pm10Result.value, pm25Rows);
+  return {
+    pm10: pm10Result.value,
+    pm25: pm25Result.status === "fulfilled" ? pm25Result.value : null,
+  };
+}
+
+/** /api/snapshot이 쓰는 진입점: 화면용 Snapshot과 DB 적재용 레코드를 한 번의 조회로 함께 만든다. */
+export async function fetchLiveData(): Promise<{ snapshot: Snapshot; records: MeasurementRecord[] }> {
+  const { pm10, pm25 } = await fetchAirKoreaRows();
+  return {
+    snapshot: mergeIntoSnapshot(pm10, pm25),
+    records: toMeasurementRecords(pm10, pm25),
+  };
+}
+
+/** §7.4 크론 배치가 쓰는 진입점: 최신 ~48시간 창을 통째로 가져와 DB에 upsert할 레코드로 변환한다.
+ *  매 실행마다 같은 창을 다시 받아 upsert하므로, 별도 backfill/공백복구 로직 없이도
+ *  최초 실행이 곧 backfill이 되고 이후 실행이 자연스럽게 공백을 메운다 (§7.2). */
+export async function fetchMeasurementRecords(): Promise<MeasurementRecord[]> {
+  const { pm10, pm25 } = await fetchAirKoreaRows();
+  return toMeasurementRecords(pm10, pm25);
 }
